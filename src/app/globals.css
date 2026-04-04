@@ -109,7 +109,10 @@
     @apply bg-cream text-walnut;
   }
   html {
-    @apply font-sans scroll-smooth;
+    @apply font-sans;
+  }
+  html[data-scroll-behavior="smooth"] {
+    scroll-behavior: smooth;
   }
 }
 
