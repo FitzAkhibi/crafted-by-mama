@@ -1,22 +1,83 @@
 import { NextResponse } from "next/server";
 import { getStripe } from "@/lib/stripe";
+import { products } from "@/data/products";
 import { FREE_SHIPPING_THRESHOLD, FLAT_SHIPPING_RATE } from "@/lib/constants";
+import { rateLimit, getClientIp } from "@/lib/rate-limit";
+import { checkoutSchema } from "@/lib/validations";
 
-interface CheckoutItem {
-  name: string;
-  price: number; // cents
+interface CheckoutItemRequest {
+  productId: string;
   quantity: number;
-  image?: string;
   customizations?: Record<string, string>;
+}
+
+/**
+ * Calculate the true price of a product server-side, including customization modifiers.
+ * Never trust client-sent prices.
+ */
+function calculateItemPrice(
+  productId: string,
+  customizations?: Record<string, string>
+): { price: number; name: string; description?: string } | null {
+  const product = products.find((p) => p.id === productId && p.active);
+  if (!product) return null;
+
+  let price = product.basePrice;
+
+  // Apply customization price modifiers
+  if (product.customizationOptions && customizations) {
+    for (const option of product.customizationOptions) {
+      const selectedValue = customizations[option.id];
+      if (!selectedValue) continue;
+
+      // Option-level modifier
+      if (option.priceModifier) {
+        price += option.priceModifier;
+      }
+
+      // Selected value's modifier (for select options)
+      if (option.options) {
+        const selected = option.options.find((o) => o.value === selectedValue);
+        if (selected?.priceModifier) {
+          price += selected.priceModifier;
+        }
+      }
+    }
+  }
+
+  // Build customization description for Stripe line item
+  const customizationDesc = customizations
+    ? Object.entries(customizations)
+        .filter(([, v]) => v) // skip empty values
+        .map(([k, v]) => `${k.replace(/_/g, " ")}: ${v}`)
+        .join(", ")
+    : undefined;
+
+  return { price, name: product.name, description: customizationDesc };
 }
 
 export async function POST(request: Request) {
   try {
-    const { items } = (await request.json()) as { items: CheckoutItem[] };
-
-    if (!items || items.length === 0) {
-      return NextResponse.json({ error: "No items provided" }, { status: 400 });
+    // Rate limit: 10 checkout attempts per IP per hour
+    const ip = getClientIp(request);
+    const rl = rateLimit(`checkout:${ip}`, { limit: 10, windowSeconds: 3600 });
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { error: "Too many checkout attempts. Please try again later." },
+        { status: 429 }
+      );
     }
+
+    const body = await request.json();
+    const parsed = checkoutSchema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: parsed.error.issues[0]?.message || "Invalid input" },
+        { status: 400 }
+      );
+    }
+
+    const { items } = parsed.data;
 
     if (!process.env.STRIPE_SECRET_KEY) {
       return NextResponse.json(
@@ -27,30 +88,35 @@ export async function POST(request: Request) {
 
     const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3001";
 
-    // Build line items
-    const lineItems = items.map((item) => {
-      const customizationDesc = item.customizations
-        ? Object.entries(item.customizations)
-            .map(([k, v]) => `${k}: ${v}`)
-            .join(", ")
-        : undefined;
+    // Validate and price each item SERVER-SIDE
+    const lineItems = [];
+    let subtotal = 0;
 
-      return {
+    for (const item of items) {
+      const priced = calculateItemPrice(item.productId, item.customizations);
+      if (!priced) {
+        return NextResponse.json(
+          { error: `Product not found: ${item.productId}` },
+          { status: 400 }
+        );
+      }
+
+      subtotal += priced.price * item.quantity;
+
+      lineItems.push({
         price_data: {
           currency: "usd",
           product_data: {
-            name: item.name,
-            description: customizationDesc || undefined,
-            images: item.image ? [`${siteUrl}${item.image}`] : undefined,
+            name: priced.name,
+            description: priced.description || undefined,
           },
-          unit_amount: item.price,
+          unit_amount: priced.price,
         },
         quantity: item.quantity,
-      };
-    });
+      });
+    }
 
-    // Calculate if free shipping applies
-    const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+    // Calculate shipping based on server-side subtotal
     const shippingOptions =
       subtotal >= FREE_SHIPPING_THRESHOLD
         ? [
@@ -72,17 +138,6 @@ export async function POST(request: Request) {
                 type: "fixed_amount" as const,
                 fixed_amount: { amount: FLAT_SHIPPING_RATE, currency: "usd" },
                 display_name: "Standard Shipping",
-                delivery_estimate: {
-                  minimum: { unit: "business_day" as const, value: 10 },
-                  maximum: { unit: "business_day" as const, value: 19 },
-                },
-              },
-            },
-            {
-              shipping_rate_data: {
-                type: "fixed_amount" as const,
-                fixed_amount: { amount: 0, currency: "usd" },
-                display_name: "Free Shipping (orders $75+)",
                 delivery_estimate: {
                   minimum: { unit: "business_day" as const, value: 10 },
                   maximum: { unit: "business_day" as const, value: 19 },

@@ -29,6 +29,29 @@ export async function generateMetadata({
   };
 }
 
+/**
+ * Sanitize a string to prevent XSS when used with dangerouslySetInnerHTML.
+ * Strips all HTML tags except explicitly allowed inline formatting.
+ */
+function sanitizeHtml(html: string): string {
+  // First, escape all HTML entities
+  const escaped = html
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+  return escaped;
+}
+
+function formatInline(text: string): string {
+  // Sanitize first, then apply safe markdown formatting
+  const safe = sanitizeHtml(text);
+  return safe
+    .replace(/\*\*(.+?)\*\*/g, '<strong class="text-walnut font-semibold">$1</strong>')
+    .replace(/\*(.+?)\*/g, "<em>$1</em>");
+}
+
 // Simple Markdown renderer for headings, lists, bold, italic, etc.
 function renderMarkdown(content: string) {
   const lines = content.split("\n");
@@ -51,12 +74,6 @@ function renderMarkdown(content: string) {
       listItems = [];
       inList = false;
     }
-  }
-
-  function formatInline(text: string): string {
-    return text
-      .replace(/\*\*(.+?)\*\*/g, '<strong class="text-walnut font-semibold">$1</strong>')
-      .replace(/\*(.+?)\*/g, '<em>$1</em>');
   }
 
   for (let i = 0; i < lines.length; i++) {

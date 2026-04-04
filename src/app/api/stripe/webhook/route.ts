@@ -4,6 +4,27 @@ import Stripe from "stripe";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * In-memory set of processed Stripe event IDs to prevent duplicate processing.
+ * For production at scale, replace with a database check (e.g., check orders table
+ * for existing stripeSessionId before inserting).
+ */
+const processedEvents = new Set<string>();
+
+// Prevent unbounded memory growth — cap at 10,000 entries
+const MAX_PROCESSED_EVENTS = 10_000;
+
+function markEventProcessed(eventId: string) {
+  if (processedEvents.size >= MAX_PROCESSED_EVENTS) {
+    // Clear oldest half (Set maintains insertion order)
+    const entries = Array.from(processedEvents);
+    for (let i = 0; i < entries.length / 2; i++) {
+      processedEvents.delete(entries[i]);
+    }
+  }
+  processedEvents.add(eventId);
+}
+
 async function generateOrderNumber(): Promise<string> {
   const timestamp = Date.now().toString(36).toUpperCase();
   const random = Math.random().toString(36).substring(2, 5).toUpperCase();
@@ -37,6 +58,12 @@ export async function POST(request: Request) {
       );
     }
 
+    // Idempotency check — skip already-processed events
+    if (processedEvents.has(event.id)) {
+      console.log(`Skipping already-processed event: ${event.id}`);
+      return NextResponse.json({ received: true, deduplicated: true });
+    }
+
     switch (event.type) {
       case "checkout.session.completed": {
         const session = event.data.object;
@@ -52,9 +79,10 @@ export async function POST(request: Request) {
         console.log("Metadata:", session.metadata);
 
         // TODO: When DB is connected:
-        // 1. Insert order into orders table
-        // 2. Insert line items into order_items table
-        // 3. Send confirmation email via Resend
+        // 1. Check if order with this stripeSessionId already exists (DB-level idempotency)
+        // 2. Insert order into orders table
+        // 3. Insert line items into order_items table
+        // 4. Send confirmation email via Resend
         break;
       }
 
@@ -84,6 +112,9 @@ export async function POST(request: Request) {
       default:
         console.log(`Unhandled event type: ${event.type}`);
     }
+
+    // Mark event as processed after successful handling
+    markEventProcessed(event.id);
 
     return NextResponse.json({ received: true });
   } catch (error) {
