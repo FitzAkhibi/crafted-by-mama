@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { AnnouncementBar } from "@/components/layout/announcement-bar";
 import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
+import { Analytics } from "@vercel/analytics/react";
 import { SITE_CONFIG } from "@/lib/constants";
 import "./globals.css";
 
@@ -59,6 +60,7 @@ export default function RootLayout({
         <main className="flex-1">{children}</main>
         <Footer />
         <Toaster position="bottom-right" />
+        <Analytics />
       </body>
     </html>
   );
