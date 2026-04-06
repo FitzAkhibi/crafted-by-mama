@@ -155,7 +155,6 @@ export default function ContactPage() {
                     <option value="general">General Inquiry</option>
                     <option value="custom-order">Custom Order</option>
                     <option value="subscription">Subscription Question</option>
-                    <option value="wholesale">Wholesale</option>
                     <option value="other">Other</option>
                   </select>
                 </div>

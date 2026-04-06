@@ -129,9 +129,12 @@ export async function sendContactNotification({
   message: string;
 }) {
   const resend = getResend();
-  if (!resend) return;
+  if (!resend) {
+    console.error("Resend not configured — contact email not sent");
+    throw new Error("Email service is not configured");
+  }
 
-  await resend.emails.send({
+  const result = await resend.emails.send({
     from: FROM_EMAIL,
     to: "hello@craftedbymama.com",
     replyTo: email,
@@ -145,4 +148,12 @@ Subject: ${subject}
 Message:
 ${message}`,
   });
+
+  if (result.error) {
+    console.error("Resend error sending contact notification:", result.error);
+    throw new Error(`Failed to send email: ${result.error.message}`);
+  }
+
+  console.log("Contact notification sent successfully:", result.data?.id);
+  return result;
 }
